@@ -1,0 +1,13 @@
+# Environment variables
+.env
+
+# Google Drive API credentials
+credentials.json
+token.json
+
+# Python
+__pycache__/
+*.pyc
+
+# Logs
+migration.log
