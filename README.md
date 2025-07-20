@@ -7,6 +7,7 @@ This Python script migrates Notion notes that contain only a single attachment (
 - Automatically identifies Notion pages with single attachments
 - Downloads attachments from Notion
 - Uploads files to Google Drive with proper metadata
+- Creates subfolders based on Notion database names for organized storage
 - Supports images, PDFs, and other file types
 - Comprehensive logging and error handling
 - Pagination support for large Notion workspaces
@@ -98,9 +99,32 @@ On the first run, the script will:
 1. **Connects to APIs**: Initializes connections to both Notion and Google Drive
 2. **Retrieves Pages**: Gets all accessible Notion pages (or from a specific database)
 3. **Analyzes Content**: Identifies pages that contain only a single attachment
-4. **Downloads Files**: Downloads attachments from Notion
-5. **Uploads to Drive**: Uploads files to Google Drive with descriptive metadata
-6. **Logs Progress**: Provides detailed logging of the migration process
+4. **Creates Subfolders**: For pages from databases, creates subfolders in Google Drive named after the database
+5. **Downloads Files**: Downloads attachments from Notion
+6. **Uploads to Drive**: Uploads files to Google Drive with descriptive metadata in the appropriate subfolder
+7. **Logs Progress**: Provides detailed logging of the migration process
+
+### Subfolder Organization
+
+The script automatically organizes files by creating subfolders based on the Notion database names:
+
+- **Database Pages**: Files from pages that belong to a Notion database are uploaded to a subfolder named after that database
+- **Standalone Pages**: Files from standalone pages (not in a database) are uploaded to the main target folder or root
+- **Folder Naming**: Database names are sanitized for Google Drive compatibility (special characters removed, spaces preserved)
+- **Folder Reuse**: If a subfolder already exists, it will be reused rather than creating duplicates
+- **Caching**: Database folder mappings are cached during execution for improved performance
+
+**Example folder structure:**
+```
+Google Drive Target Folder/
+├── My Project Database/
+│   ├── attachment1.pdf
+│   └── image2.png
+├── Research Notes/
+│   ├── document3.pdf
+│   └── screenshot4.png
+└── standalone_file.jpg (from non-database page)
+```
 
 ### Output
 

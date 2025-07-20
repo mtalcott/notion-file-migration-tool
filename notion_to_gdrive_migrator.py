@@ -48,6 +48,7 @@ class NotionToGDriveMigrator:
         self.drive_service = self._init_google_drive_service()
         self.notion_database_id = os.getenv('NOTION_DATABASE_ID')
         self.gdrive_folder_id = os.getenv('GOOGLE_DRIVE_FOLDER_ID')
+        self.database_folder_cache = {}  # Cache for database name -> folder ID mapping
         
         if not self.notion_database_id:
             logger.warning("NOTION_DATABASE_ID not set. Will search all accessible pages.")
@@ -236,9 +237,15 @@ class NotionToGDriveMigrator:
             logger.error(f"Error downloading attachment: {e}")
             return None
     
-    def upload_to_google_drive(self, filename: str, file_content: bytes, page_title: str) -> Optional[str]:
+    def upload_to_google_drive(self, filename: str, file_content: bytes, page_title: str, target_folder_id: Optional[str] = None) -> Optional[str]:
         """
         Upload file to Google Drive.
+        
+        Args:
+            filename: Name of the file to upload
+            file_content: Binary content of the file
+            page_title: Title of the Notion page (for metadata)
+            target_folder_id: Specific folder ID to upload to (overrides default)
         
         Returns:
             File ID if successful, None otherwise
@@ -260,9 +267,10 @@ class NotionToGDriveMigrator:
                 'description': f'Migrated from Notion page: {page_title}'
             }
             
-            # Add to specific folder if specified
-            if self.gdrive_folder_id:
-                file_metadata['parents'] = [self.gdrive_folder_id]
+            # Determine target folder
+            folder_id = target_folder_id or self.gdrive_folder_id
+            if folder_id:
+                file_metadata['parents'] = [folder_id]
             
             # Upload file
             media = MediaFileUpload(temp_file_path, mimetype=mime_type)
@@ -284,6 +292,85 @@ class NotionToGDriveMigrator:
             temp_file_path = f"/tmp/{filename}"
             if os.path.exists(temp_file_path):
                 os.remove(temp_file_path)
+            return None
+    
+    def get_database_name(self, database_id: str) -> str:
+        """Get the name of a Notion database."""
+        try:
+            database = cast(Dict[str, Any], self.notion_client.databases.retrieve(database_id=database_id))
+            title_array = database.get('title', [])
+            if title_array:
+                return ''.join([t.get('plain_text', '') for t in title_array])
+            return f"Untitled Database ({database_id})"
+        except Exception as e:
+            logger.warning(f"Error retrieving database name for {database_id}: {e}")
+            return f"Unknown Database ({database_id})"
+    
+    def create_or_get_database_folder(self, database_id: str) -> Optional[str]:
+        """
+        Create or get a subfolder in Google Drive based on the database name.
+        
+        Returns:
+            Folder ID if successful, None otherwise
+        """
+        # Check cache first
+        if database_id in self.database_folder_cache:
+            return self.database_folder_cache[database_id]
+        
+        try:
+            # Get database name
+            database_name = self.get_database_name(database_id)
+            
+            # Sanitize folder name for Google Drive
+            safe_folder_name = "".join(c for c in database_name if c.isalnum() or c in (' ', '-', '_')).strip()
+            if not safe_folder_name:
+                safe_folder_name = f"Database_{database_id[:8]}"
+            
+            # Determine parent folder
+            parent_folder_id = self.gdrive_folder_id or 'root'
+            
+            # Check if folder already exists
+            query = f"name='{safe_folder_name}' and '{parent_folder_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
+            results = self.drive_service.files().list(q=query, fields='files(id, name)').execute()
+            existing_folders = results.get('files', [])
+            
+            if existing_folders:
+                # Folder already exists
+                folder_id = existing_folders[0]['id']
+                logger.info(f"Using existing folder '{safe_folder_name}' (ID: {folder_id})")
+            else:
+                # Create new folder
+                folder_metadata = {
+                    'name': safe_folder_name,
+                    'mimeType': 'application/vnd.google-apps.folder',
+                    'parents': [parent_folder_id]
+                }
+                
+                folder = self.drive_service.files().create(
+                    body=folder_metadata,
+                    fields='id,name'
+                ).execute()
+                
+                folder_id = folder.get('id')
+                logger.info(f"Created new folder '{safe_folder_name}' (ID: {folder_id})")
+            
+            # Cache the result
+            self.database_folder_cache[database_id] = folder_id
+            return folder_id
+            
+        except Exception as e:
+            logger.error(f"Error creating/getting database folder for {database_id}: {e}")
+            return None
+    
+    def get_page_database_id(self, page: Dict) -> Optional[str]:
+        """Extract the database ID from a page if it belongs to a database."""
+        try:
+            parent = page.get('parent', {})
+            if parent.get('type') == 'database_id':
+                return parent.get('database_id')
+            return None
+        except Exception as e:
+            logger.warning(f"Error extracting database ID from page: {e}")
             return None
     
     def get_page_title(self, page: Dict) -> str:
@@ -351,13 +438,22 @@ class NotionToGDriveMigrator:
                 stats['single_attachment_pages'] += 1
                 logger.info(f"Found single attachment page: {page_title}")
                 
+                # Determine target folder based on database
+                target_folder_id = None
+                page_database_id = self.get_page_database_id(page)
+                if page_database_id:
+                    target_folder_id = self.create_or_get_database_folder(page_database_id)
+                    if target_folder_id:
+                        database_name = self.get_database_name(page_database_id)
+                        logger.info(f"Will upload to database folder: {database_name}")
+                
                 # Download attachment
                 download_result = self.download_attachment(attachment_block)
                 if download_result:
                     filename, file_content = download_result
                     
-                    # Upload to Google Drive
-                    file_id = self.upload_to_google_drive(filename, file_content, page_title)
+                    # Upload to Google Drive (to database-specific folder if available)
+                    file_id = self.upload_to_google_drive(filename, file_content, page_title, target_folder_id)
                     if file_id:
                         stats['successful_migrations'] += 1
                         logger.info(f"Successfully migrated: {page_title} -> {filename}")
