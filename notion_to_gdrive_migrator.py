@@ -266,7 +266,7 @@ class NotionToGDriveMigrator:
             
             # Upload file
             media = MediaFileUpload(temp_file_path, mimetype=mime_type)
-            file = self.drive_service.files().create(
+            file = self.drive_service.files().create(  # type: ignore
                 body=file_metadata,
                 media_body=media,
                 fields='id,name,webViewLink'
