@@ -62,7 +62,7 @@ class NotionToGDriveMigrator:
             raise ValueError("NOTION_TOKEN environment variable is required")
         
         # Use the synchronous client explicitly
-        return NotionClient(auth=notion_token, client_options={"timeout_ms": 30000})
+        return NotionClient(auth=notion_token)
     
     def _init_google_drive_service(self):
         """Initialize Google Drive service."""
