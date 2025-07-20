@@ -10,7 +10,7 @@ import os
 import logging
 import requests
 import mimetypes
-from typing import List, Dict, Optional, Tuple, Any
+from typing import List, Dict, Optional, Tuple, Any, cast
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -61,12 +61,13 @@ class NotionToGDriveMigrator:
         if not notion_token:
             raise ValueError("NOTION_TOKEN environment variable is required")
         
-        return NotionClient(auth=notion_token)
+        # Use the synchronous client explicitly
+        return NotionClient(auth=notion_token, client_options={"timeout_ms": 30000})
     
     def _init_google_drive_service(self):
         """Initialize Google Drive service."""
         creds = None
-        credentials_file = os.getenv('GOOGLE_CREDENTIALS_FILE', 'credentials.json')
+        credentials_file = os.getenv('GOOGLE_CREDENTIALS_FILE', 'google_credentials.json')
         token_file = 'token.json'
         
         # Load existing token
@@ -103,29 +104,29 @@ class NotionToGDriveMigrator:
             if self.notion_database_id:
                 # Query specific database
                 logger.info(f"Querying Notion database: {self.notion_database_id}")
-                response = self.notion_client.databases.query(
+                response = cast(Dict[str, Any], self.notion_client.databases.query(
                     database_id=self.notion_database_id
-                )
+                ))
                 pages.extend(response.get('results', []))
                 
                 # Handle pagination
                 while response.get('has_more'):
-                    response = self.notion_client.databases.query(
+                    response = cast(Dict[str, Any], self.notion_client.databases.query(
                         database_id=self.notion_database_id,
                         start_cursor=response.get('next_cursor')
-                    )
+                    ))
                     pages.extend(response.get('results', []))
             else:
                 # Search all accessible pages
                 logger.info("Searching all accessible Notion pages")
-                response = self.notion_client.search()
+                response = cast(Dict[str, Any], self.notion_client.search())
                 pages.extend(response.get('results', []))
                 
                 # Handle pagination
                 while response.get('has_more'):
-                    response = self.notion_client.search(
+                    response = cast(Dict[str, Any], self.notion_client.search(
                         start_cursor=response.get('next_cursor')
-                    )
+                    ))
                     pages.extend(response.get('results', []))
             
             logger.info(f"Found {len(pages)} pages in Notion")
@@ -139,15 +140,15 @@ class NotionToGDriveMigrator:
         """Get all blocks for a specific page."""
         try:
             blocks = []
-            response = self.notion_client.blocks.children.list(block_id=page_id)
+            response = cast(Dict[str, Any], self.notion_client.blocks.children.list(block_id=page_id))
             blocks.extend(response.get('results', []))
             
             # Handle pagination
             while response.get('has_more'):
-                response = self.notion_client.blocks.children.list(
+                response = cast(Dict[str, Any], self.notion_client.blocks.children.list(
                     block_id=page_id,
                     start_cursor=response.get('next_cursor')
-                )
+                ))
                 blocks.extend(response.get('results', []))
             
             return blocks
