@@ -670,12 +670,9 @@ class NotionToGDriveMigrator:
         clean_page_id = page_id.replace('-', '')
         return f"https://www.notion.so/{clean_page_id}"
     
-    def migrate_single_attachment_pages(self, max_files: int = 20) -> Dict[str, int]:
+    def migrate_single_attachment_pages(self) -> Dict[str, int]:
         """
         Main migration function.
-        
-        Args:
-            max_files: Maximum number of files to migrate (default: 20)
         
         Returns:
             Dictionary with migration statistics
@@ -684,11 +681,10 @@ class NotionToGDriveMigrator:
             'total_pages': 0,
             'single_attachment_pages': 0,
             'successful_migrations': 0,
-            'failed_migrations': 0,
-            'skipped_due_to_limit': 0
+            'failed_migrations': 0
         }
         
-        logger.info(f"Starting Notion to Google Drive migration (limited to {max_files} files for testing)...")
+        logger.info("Starting Notion to Google Drive migration...")
         logger.info("NOTE: This is a COPY operation - no files will be deleted from Notion")
         
         # Get all pages
@@ -733,12 +729,6 @@ class NotionToGDriveMigrator:
                         database_name = self.get_database_name(hierarchy['database_id'])
                         logger.info(f"Will upload to database folder: {database_name}")
                 
-                # Check if we've reached the file limit
-                if stats['successful_migrations'] >= max_files:
-                    stats['skipped_due_to_limit'] += 1
-                    logger.info(f"Reached file limit ({max_files}), skipping remaining files")
-                    break
-                
                 # Download attachment with improved filename handling
                 download_result = self.download_attachment(attachment_block, page_title)
                 if download_result:
@@ -757,11 +747,6 @@ class NotionToGDriveMigrator:
                             'url': page_url,
                             'filename': filename
                         })
-                        
-                        # Check if we've reached the limit after this upload
-                        if stats['successful_migrations'] >= max_files:
-                            logger.info(f"Reached file limit ({max_files}), stopping migration")
-                            break
                     else:
                         stats['failed_migrations'] += 1
                         logger.error(f"Failed to upload: {page_title}")
@@ -800,14 +785,12 @@ def main():
         stats = migrator.migrate_single_attachment_pages()
         
         print("\n" + "="*50)
-        print("MIGRATION SUMMARY (TEST MODE - LIMITED TO 20 FILES)")
+        print("MIGRATION SUMMARY")
         print("="*50)
         print(f"Total pages processed: {stats['total_pages']}")
         print(f"Single attachment pages found: {stats['single_attachment_pages']}")
         print(f"Successful migrations: {stats['successful_migrations']}")
         print(f"Failed migrations: {stats['failed_migrations']}")
-        if 'skipped_due_to_limit' in stats:
-            print(f"Skipped due to limit: {stats['skipped_due_to_limit']}")
         print("="*50)
         print("\nNOTE: This was a COPY operation - no files were deleted from Notion")
         
