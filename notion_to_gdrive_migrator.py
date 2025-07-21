@@ -10,6 +10,7 @@ import os
 import logging
 import requests
 import mimetypes
+from datetime import datetime
 from typing import List, Dict, Optional, Tuple, Any, cast
 from pathlib import Path
 
@@ -25,16 +26,23 @@ from google.auth.exceptions import RefreshError
 # Load environment variables
 load_dotenv()
 
+# Create timestamped log filename
+timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+log_filename = f'migration_{timestamp}.log'
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('migration.log'),
+        logging.FileHandler(log_filename),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Log which file is being used for logging
+logger.info(f"Logging to file: {log_filename}")
 
 # Google Drive API scopes
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
@@ -804,7 +812,7 @@ def main():
         print("\nNOTE: This was a COPY operation - no files were deleted from Notion")
         
         if stats['failed_migrations'] > 0:
-            print("\nSome migrations failed. Check migration.log for details.")
+            print(f"\nSome migrations failed. Check {log_filename} for details.")
         
     except Exception as e:
         logger.error(f"Migration failed with error: {e}")

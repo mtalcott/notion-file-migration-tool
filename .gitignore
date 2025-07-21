@@ -10,7 +10,7 @@ __pycache__/
 *.pyc
 
 # Logs
-migration.log
+migration*.log
 
 # Etc
 *:Zone.Identifier
