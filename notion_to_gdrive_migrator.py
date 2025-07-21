@@ -357,37 +357,21 @@ class NotionToGDriveMigrator:
                 if not filename or filename.strip() == '':
                     filename = f"attachment_{attachment_block.get('id', 'unknown')}"
             
-            # Check if filename is generic and should be replaced with page title
-            generic_names = ['image.png', 'image.jpg', 'image.jpeg', 'image.gif', 'image.webp', 
-                           'attachment.pdf', 'file.pdf', 'document.pdf', 'untitled.pdf']
-            
-            if filename.lower() in generic_names or filename.startswith('attachment_'):
-                # Generic filename - use only page title
-                if page_title and page_title.strip():
-                    # Use page title as filename, preserving the original extension
-                    original_extension = Path(filename).suffix
-                    if not original_extension and block_type in ['image', 'pdf']:
-                        if block_type == 'image':
-                            original_extension = '.png'
-                        elif block_type == 'pdf':
-                            original_extension = '.pdf'
-                    
-                    # Sanitize page title for filename
-                    safe_page_title = "".join(c for c in page_title if c.isalnum() or c in (' ', '-', '_')).strip()
-                    if safe_page_title:
-                        filename = safe_page_title + original_extension
-                        logger.info(f"Using page title as filename: {filename}")
-            else:
-                # Non-generic filename - combine page title with attachment title
-                if page_title and page_title.strip():
-                    # Sanitize page title for filename
-                    safe_page_title = "".join(c for c in page_title if c.isalnum() or c in (' ', '-', '_')).strip()
-                    # Sanitize attachment filename
-                    safe_attachment_name = "".join(c for c in filename if c.isalnum() or c in (' ', '-', '_', '.')).strip()
-                    
-                    if safe_page_title and safe_attachment_name:
-                        filename = f"{safe_page_title} - {safe_attachment_name}"
-                        logger.info(f"Using combined filename: {filename}")
+            # Always use page title as filename when available
+            if page_title and page_title.strip():
+                # Determine the appropriate file extension
+                original_extension = Path(filename).suffix
+                if not original_extension and block_type in ['image', 'pdf']:
+                    if block_type == 'image':
+                        original_extension = '.png'
+                    elif block_type == 'pdf':
+                        original_extension = '.pdf'
+                
+                # Sanitize page title for filename
+                safe_page_title = "".join(c for c in page_title if c.isalnum() or c in (' ', '-', '_')).strip()
+                if safe_page_title:
+                    filename = safe_page_title + original_extension
+                    logger.info(f"Using page title as filename: {filename}")
             
             # Ensure filename has proper extension
             if not Path(filename).suffix and block_type in ['image', 'pdf']:
