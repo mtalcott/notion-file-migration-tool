@@ -361,6 +361,7 @@ class NotionToGDriveMigrator:
                            'attachment.pdf', 'file.pdf', 'document.pdf', 'untitled.pdf']
             
             if filename.lower() in generic_names or filename.startswith('attachment_'):
+                # Generic filename - use only page title
                 if page_title and page_title.strip():
                     # Use page title as filename, preserving the original extension
                     original_extension = Path(filename).suffix
@@ -375,6 +376,17 @@ class NotionToGDriveMigrator:
                     if safe_page_title:
                         filename = safe_page_title + original_extension
                         logger.info(f"Using page title as filename: {filename}")
+            else:
+                # Non-generic filename - combine page title with attachment title
+                if page_title and page_title.strip():
+                    # Sanitize page title for filename
+                    safe_page_title = "".join(c for c in page_title if c.isalnum() or c in (' ', '-', '_')).strip()
+                    # Sanitize attachment filename
+                    safe_attachment_name = "".join(c for c in filename if c.isalnum() or c in (' ', '-', '_', '.')).strip()
+                    
+                    if safe_page_title and safe_attachment_name:
+                        filename = f"{safe_page_title} - {safe_attachment_name}"
+                        logger.info(f"Using combined filename: {filename}")
             
             # Ensure filename has proper extension
             if not Path(filename).suffix and block_type in ['image', 'pdf']:
@@ -659,12 +671,12 @@ class NotionToGDriveMigrator:
             logger.warning(f"Error extracting page title: {e}")
             return f"Untitled Page ({page.get('id', 'unknown')})"
     
-    def migrate_single_attachment_pages(self, max_files: int = 5) -> Dict[str, int]:
+    def migrate_single_attachment_pages(self, max_files: int = 20) -> Dict[str, int]:
         """
         Main migration function.
         
         Args:
-            max_files: Maximum number of files to migrate (default: 5 for testing)
+            max_files: Maximum number of files to migrate (default: 20)
         
         Returns:
             Dictionary with migration statistics
@@ -769,7 +781,7 @@ def main():
         stats = migrator.migrate_single_attachment_pages()
         
         print("\n" + "="*50)
-        print("MIGRATION SUMMARY (TEST MODE - LIMITED TO 5 FILES)")
+        print("MIGRATION SUMMARY (TEST MODE - LIMITED TO 20 FILES)")
         print("="*50)
         print(f"Total pages processed: {stats['total_pages']}")
         print(f"Single attachment pages found: {stats['single_attachment_pages']}")
