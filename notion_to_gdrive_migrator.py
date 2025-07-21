@@ -57,6 +57,7 @@ class NotionToGDriveMigrator:
             
         self.gdrive_folder_id = os.getenv('GOOGLE_DRIVE_FOLDER_ID')
         self.database_folder_cache = {}  # Cache for folder paths -> folder ID mapping
+        self.uploaded_files = {}  # Track uploaded files for duplicate detection: {filename: file_id}
         
         # Debug logging
         logger.info(f"Raw NOTION_DATABASE_ID from env: '{raw_database_id}'")
@@ -400,9 +401,42 @@ class NotionToGDriveMigrator:
             logger.debug(f"Attachment block structure: {attachment_block}")
             return None
     
+    def check_for_duplicate(self, filename: str, target_folder_id: Optional[str] = None) -> Optional[str]:
+        """
+        Check if a file with the same name already exists in the target folder.
+        
+        Args:
+            filename: Name of the file to check
+            target_folder_id: Folder ID to check in (None for root)
+            
+        Returns:
+            File ID if duplicate exists, None otherwise
+        """
+        try:
+            folder_id = target_folder_id or self.gdrive_folder_id or 'root'
+            
+            # Search for files with the same name in the target folder
+            query = f"name='{filename}' and '{folder_id}' in parents and trashed=false"
+            results = self.drive_service.files().list(  # type: ignore
+                q=query, 
+                fields='files(id, name, createdTime)'
+            ).execute()
+            
+            existing_files = results.get('files', [])
+            if existing_files:
+                existing_file = existing_files[0]  # Get the first match
+                logger.info(f"Duplicate found: {filename} (ID: {existing_file['id']}, Created: {existing_file.get('createdTime', 'Unknown')})")
+                return existing_file['id']
+            
+            return None
+            
+        except Exception as e:
+            logger.warning(f"Error checking for duplicate {filename}: {e}")
+            return None
+
     def upload_to_google_drive(self, filename: str, file_content: bytes, page_title: str, target_folder_id: Optional[str] = None) -> Optional[str]:
         """
-        Upload file to Google Drive.
+        Upload file to Google Drive with duplicate detection.
         
         Args:
             filename: Name of the file to upload
@@ -414,6 +448,12 @@ class NotionToGDriveMigrator:
             File ID if successful, None otherwise
         """
         try:
+            # Check for duplicates first
+            existing_file_id = self.check_for_duplicate(filename, target_folder_id)
+            if existing_file_id:
+                logger.info(f"Skipping upload - duplicate file already exists: {filename}")
+                return existing_file_id
+            
             # Create a temporary file
             temp_file_path = f"/tmp/{filename}"
             with open(temp_file_path, 'wb') as temp_file:
@@ -446,8 +486,12 @@ class NotionToGDriveMigrator:
             # Clean up temporary file
             os.remove(temp_file_path)
             
-            logger.info(f"Successfully uploaded {filename} to Google Drive (ID: {file.get('id')})")
-            return file.get('id')
+            # Track uploaded file for future duplicate detection
+            file_id = file.get('id')
+            self.uploaded_files[filename] = file_id
+            
+            logger.info(f"Successfully uploaded {filename} to Google Drive (ID: {file_id})")
+            return file_id
             
         except Exception as e:
             logger.error(f"Error uploading {filename} to Google Drive: {e}")
