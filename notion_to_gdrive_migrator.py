@@ -46,12 +46,26 @@ class NotionToGDriveMigrator:
         """Initialize the migrator with API clients."""
         self.notion_client = self._init_notion_client()
         self.drive_service = self._init_google_drive_service()
-        self.notion_database_id = os.getenv('NOTION_DATABASE_ID')
+        
+        # Get and validate database ID
+        raw_database_id = os.getenv('NOTION_DATABASE_ID')
+        self.notion_database_id = raw_database_id.strip() if raw_database_id else None
+        
+        # Ensure empty string is treated as None
+        if self.notion_database_id == '':
+            self.notion_database_id = None
+            
         self.gdrive_folder_id = os.getenv('GOOGLE_DRIVE_FOLDER_ID')
-        self.database_folder_cache = {}  # Cache for database name -> folder ID mapping
+        self.database_folder_cache = {}  # Cache for folder paths -> folder ID mapping
+        
+        # Debug logging
+        logger.info(f"Raw NOTION_DATABASE_ID from env: '{raw_database_id}'")
+        logger.info(f"Processed NOTION_DATABASE_ID: '{self.notion_database_id}'")
         
         if not self.notion_database_id:
-            logger.warning("NOTION_DATABASE_ID not set. Will search all accessible pages.")
+            logger.info("NOTION_DATABASE_ID not set. Will search all accessible pages.")
+        else:
+            logger.info(f"NOTION_DATABASE_ID set to: {self.notion_database_id}")
         
         if not self.gdrive_folder_id:
             logger.warning("GOOGLE_DRIVE_FOLDER_ID not set. Files will be uploaded to root.")
@@ -193,9 +207,115 @@ class NotionToGDriveMigrator:
         
         return is_single_attachment, attachment_block
     
-    def download_attachment(self, attachment_block: Dict) -> Optional[Tuple[str, bytes]]:
+    def get_page_hierarchy(self, page: Dict) -> Dict[str, Any]:
+        """
+        Get the full hierarchy path for a page (database -> parent pages -> current page).
+        
+        Returns:
+            Dictionary with hierarchy information
+        """
+        hierarchy = {
+            'database_id': None,
+            'database_name': None,
+            'parent_pages': [],  # List of parent page titles from root to immediate parent
+            'full_path': []  # Complete path including database and all parents
+        }
+        
+        try:
+            parent = page.get('parent', {})
+            parent_type = parent.get('type')
+            
+            if parent_type == 'database_id':
+                # Direct child of database
+                hierarchy['database_id'] = parent.get('database_id')
+                if hierarchy['database_id']:
+                    hierarchy['database_name'] = self.get_database_name(hierarchy['database_id'])
+                    hierarchy['full_path'] = [hierarchy['database_name']]
+            elif parent_type == 'page_id':
+                # Child of another page - need to traverse up the hierarchy
+                hierarchy = self._build_page_hierarchy(page, hierarchy)
+            
+            return hierarchy
+            
+        except Exception as e:
+            logger.warning(f"Error extracting page hierarchy: {e}")
+            return hierarchy
+    
+    def _build_page_hierarchy(self, page: Dict, hierarchy: Dict[str, Any]) -> Dict[str, Any]:
+        """Recursively build the page hierarchy by traversing parent pages."""
+        try:
+            parent = page.get('parent', {})
+            parent_type = parent.get('type')
+            
+            if parent_type == 'page_id':
+                parent_page_id = parent.get('page_id')
+                if parent_page_id:
+                    # Get parent page info
+                    parent_page = cast(Dict[str, Any], self.notion_client.pages.retrieve(page_id=parent_page_id))
+                    parent_title = self.get_page_title(parent_page)
+                    
+                    # Add to hierarchy
+                    hierarchy['parent_pages'].insert(0, parent_title)
+                    
+                    # Check if parent has a parent (recursive)
+                    parent_hierarchy = self._build_page_hierarchy(parent_page, hierarchy)
+                    hierarchy.update(parent_hierarchy)
+            elif parent_type == 'block_id':
+                # Handle block_id parents - traverse up the block hierarchy
+                block_id = parent.get('block_id')
+                if block_id:
+                    try:
+                        # Get the block to find its parent
+                        block = cast(Dict[str, Any], self.notion_client.blocks.retrieve(block_id=block_id))
+                        block_parent = block.get('parent', {})
+                        block_parent_type = block_parent.get('type')
+                        
+                        if block_parent_type == 'page_id':
+                            # Block's parent is a page - get that page and continue hierarchy
+                            parent_page_id = block_parent.get('page_id')
+                            if parent_page_id:
+                                parent_page = cast(Dict[str, Any], self.notion_client.pages.retrieve(page_id=parent_page_id))
+                                parent_title = self.get_page_title(parent_page)
+                                
+                                # Add to hierarchy
+                                hierarchy['parent_pages'].insert(0, parent_title)
+                                
+                                # Continue building hierarchy from the parent page
+                                parent_hierarchy = self._build_page_hierarchy(parent_page, hierarchy)
+                                hierarchy.update(parent_hierarchy)
+                        elif block_parent_type == 'database_id':
+                            # Block's parent is a database
+                            hierarchy['database_id'] = block_parent.get('database_id')
+                            if hierarchy['database_id']:
+                                hierarchy['database_name'] = self.get_database_name(hierarchy['database_id'])
+                                hierarchy['full_path'] = [hierarchy['database_name']] + hierarchy['parent_pages']
+                        elif block_parent_type == 'block_id':
+                            # Block's parent is another block - create a fake page object to continue recursion
+                            fake_page = {'parent': block_parent}
+                            parent_hierarchy = self._build_page_hierarchy(fake_page, hierarchy)
+                            hierarchy.update(parent_hierarchy)
+                    except Exception as block_error:
+                        logger.warning(f"Error retrieving block {block_id}: {block_error}")
+            elif parent_type == 'database_id':
+                # Reached the database level
+                hierarchy['database_id'] = parent.get('database_id')
+                if hierarchy['database_id']:
+                    hierarchy['database_name'] = self.get_database_name(hierarchy['database_id'])
+                    hierarchy['full_path'] = [hierarchy['database_name']] + hierarchy['parent_pages']
+            
+            return hierarchy
+            
+        except Exception as e:
+            logger.warning(f"Error building page hierarchy: {e}")
+            return hierarchy
+
+    def download_attachment(self, attachment_block: Dict, page_title: str = "") -> Optional[Tuple[str, bytes]]:
         """
         Download attachment from Notion.
+        
+        Args:
+            attachment_block: The attachment block from Notion
+            page_title: Title of the page containing the attachment (for better naming)
         
         Returns:
             Tuple of (filename, file_content) or None if failed
@@ -205,19 +325,55 @@ class NotionToGDriveMigrator:
             attachment_data = attachment_block[block_type]
             
             # Get file URL and name
+            file_url = None
+            filename = None
+            
             if attachment_data.get('type') == 'external':
                 file_url = attachment_data['external']['url']
-                filename = attachment_data.get('caption', [{}])[0].get('plain_text', 'attachment')
+                # Safely get caption
+                caption_array = attachment_data.get('caption', [])
+                if caption_array and len(caption_array) > 0:
+                    filename = caption_array[0].get('plain_text', '')
             elif attachment_data.get('type') == 'file':
                 file_url = attachment_data['file']['url']
-                filename = attachment_data.get('caption', [{}])[0].get('plain_text', 'attachment')
+                # Safely get caption
+                caption_array = attachment_data.get('caption', [])
+                if caption_array and len(caption_array) > 0:
+                    filename = caption_array[0].get('plain_text', '')
             else:
                 logger.warning(f"Unsupported attachment type: {attachment_data.get('type')}")
                 return None
             
-            # Extract filename from URL if not provided
-            if not filename or filename == 'attachment':
+            if not file_url:
+                logger.error("No file URL found in attachment")
+                return None
+            
+            # Extract filename from URL if not provided or empty
+            if not filename or filename.strip() == '':
                 filename = os.path.basename(file_url.split('?')[0])
+                # If still no filename, create a default one
+                if not filename or filename.strip() == '':
+                    filename = f"attachment_{attachment_block.get('id', 'unknown')}"
+            
+            # Check if filename is generic and should be replaced with page title
+            generic_names = ['image.png', 'image.jpg', 'image.jpeg', 'image.gif', 'image.webp', 
+                           'attachment.pdf', 'file.pdf', 'document.pdf', 'untitled.pdf']
+            
+            if filename.lower() in generic_names or filename.startswith('attachment_'):
+                if page_title and page_title.strip():
+                    # Use page title as filename, preserving the original extension
+                    original_extension = Path(filename).suffix
+                    if not original_extension and block_type in ['image', 'pdf']:
+                        if block_type == 'image':
+                            original_extension = '.png'
+                        elif block_type == 'pdf':
+                            original_extension = '.pdf'
+                    
+                    # Sanitize page title for filename
+                    safe_page_title = "".join(c for c in page_title if c.isalnum() or c in (' ', '-', '_')).strip()
+                    if safe_page_title:
+                        filename = safe_page_title + original_extension
+                        logger.info(f"Using page title as filename: {filename}")
             
             # Ensure filename has proper extension
             if not Path(filename).suffix and block_type in ['image', 'pdf']:
@@ -226,8 +382,14 @@ class NotionToGDriveMigrator:
                 elif block_type == 'pdf':
                     filename += '.pdf'
             
+            # Final sanitization for filesystem
+            filename = "".join(c for c in filename if c.isalnum() or c in (' ', '-', '_', '.')).strip()
+            if not filename:
+                filename = f"attachment_{attachment_block.get('id', 'unknown')}"
+            
             # Download file
             logger.info(f"Downloading attachment: {filename}")
+            logger.debug(f"File URL: {file_url}")
             response = requests.get(file_url, timeout=30)
             response.raise_for_status()
             
@@ -235,6 +397,7 @@ class NotionToGDriveMigrator:
             
         except Exception as e:
             logger.error(f"Error downloading attachment: {e}")
+            logger.debug(f"Attachment block structure: {attachment_block}")
             return None
     
     def upload_to_google_drive(self, filename: str, file_content: bytes, page_title: str, target_folder_id: Optional[str] = None) -> Optional[str]:
@@ -306,28 +469,58 @@ class NotionToGDriveMigrator:
             logger.warning(f"Error retrieving database name for {database_id}: {e}")
             return f"Unknown Database ({database_id})"
     
-    def create_or_get_database_folder(self, database_id: str) -> Optional[str]:
+    def create_hierarchical_folders(self, hierarchy: Dict[str, Any]) -> Optional[str]:
         """
-        Create or get a subfolder in Google Drive based on the database name.
+        Create or get the full folder hierarchy in Google Drive based on page hierarchy.
         
+        Args:
+            hierarchy: Dictionary containing the page hierarchy information
+            
+        Returns:
+            Final folder ID if successful, None otherwise
+        """
+        try:
+            full_path = hierarchy.get('full_path', [])
+            if not full_path:
+                return self.gdrive_folder_id
+            
+            # Start from the root folder
+            current_folder_id = self.gdrive_folder_id or 'root'
+            
+            # Create each folder in the hierarchy
+            for folder_name in full_path:
+                current_folder_id = self._create_or_get_folder(folder_name, current_folder_id)
+                if not current_folder_id:
+                    logger.error(f"Failed to create/get folder: {folder_name}")
+                    return None
+            
+            return current_folder_id
+            
+        except Exception as e:
+            logger.error(f"Error creating hierarchical folders: {e}")
+            return None
+    
+    def _create_or_get_folder(self, folder_name: str, parent_folder_id: str) -> Optional[str]:
+        """
+        Create or get a specific folder in Google Drive.
+        
+        Args:
+            folder_name: Name of the folder to create/get
+            parent_folder_id: ID of the parent folder
+            
         Returns:
             Folder ID if successful, None otherwise
         """
-        # Check cache first
-        if database_id in self.database_folder_cache:
-            return self.database_folder_cache[database_id]
-        
         try:
-            # Get database name
-            database_name = self.get_database_name(database_id)
-            
             # Sanitize folder name for Google Drive
-            safe_folder_name = "".join(c for c in database_name if c.isalnum() or c in (' ', '-', '_')).strip()
+            safe_folder_name = "".join(c for c in folder_name if c.isalnum() or c in (' ', '-', '_', '.')).strip()
             if not safe_folder_name:
-                safe_folder_name = f"Database_{database_id[:8]}"
+                safe_folder_name = "Untitled_Folder"
             
-            # Determine parent folder
-            parent_folder_id = self.gdrive_folder_id or 'root'
+            # Create cache key for this specific folder path
+            cache_key = f"{parent_folder_id}:{safe_folder_name}"
+            if cache_key in self.database_folder_cache:
+                return self.database_folder_cache[cache_key]
             
             # Check if folder already exists
             query = f"name='{safe_folder_name}' and '{parent_folder_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
@@ -337,7 +530,7 @@ class NotionToGDriveMigrator:
             if existing_folders:
                 # Folder already exists
                 folder_id = existing_folders[0]['id']
-                logger.info(f"Using existing folder '{safe_folder_name}' (ID: {folder_id})")
+                logger.debug(f"Using existing folder '{safe_folder_name}' (ID: {folder_id})")
             else:
                 # Create new folder
                 folder_metadata = {
@@ -355,20 +548,45 @@ class NotionToGDriveMigrator:
                 logger.info(f"Created new folder '{safe_folder_name}' (ID: {folder_id})")
             
             # Cache the result
-            self.database_folder_cache[database_id] = folder_id
+            self.database_folder_cache[cache_key] = folder_id
             return folder_id
+            
+        except Exception as e:
+            logger.error(f"Error creating/getting folder '{folder_name}': {e}")
+            return None
+
+    def create_or_get_database_folder(self, database_id: str) -> Optional[str]:
+        """
+        Create or get a subfolder in Google Drive based on the database name.
+        This method is kept for backward compatibility.
+        
+        Returns:
+            Folder ID if successful, None otherwise
+        """
+        # Check cache first
+        if database_id in self.database_folder_cache:
+            return self.database_folder_cache[database_id]
+        
+        try:
+            # Get database name
+            database_name = self.get_database_name(database_id)
+            
+            # Use the new hierarchical folder creation
+            hierarchy = {
+                'full_path': [database_name]
+            }
+            
+            return self.create_hierarchical_folders(hierarchy)
             
         except Exception as e:
             logger.error(f"Error creating/getting database folder for {database_id}: {e}")
             return None
-    
+
     def get_page_database_id(self, page: Dict) -> Optional[str]:
         """Extract the database ID from a page if it belongs to a database."""
         try:
-            parent = page.get('parent', {})
-            if parent.get('type') == 'database_id':
-                return parent.get('database_id')
-            return None
+            hierarchy = self.get_page_hierarchy(page)
+            return hierarchy.get('database_id')
         except Exception as e:
             logger.warning(f"Error extracting database ID from page: {e}")
             return None
@@ -443,13 +661,21 @@ class NotionToGDriveMigrator:
                 stats['single_attachment_pages'] += 1
                 logger.info(f"Found single attachment page: {page_title}")
                 
-                # Determine target folder based on database
+                # Get full hierarchy for this page
+                hierarchy = self.get_page_hierarchy(page)
+                
+                # Determine target folder based on hierarchy
                 target_folder_id = None
-                page_database_id = self.get_page_database_id(page)
-                if page_database_id:
-                    target_folder_id = self.create_or_get_database_folder(page_database_id)
+                if hierarchy.get('full_path'):
+                    target_folder_id = self.create_hierarchical_folders(hierarchy)
                     if target_folder_id:
-                        database_name = self.get_database_name(page_database_id)
+                        folder_path = ' > '.join(hierarchy['full_path'])
+                        logger.info(f"Will upload to hierarchical folder: {folder_path}")
+                elif hierarchy.get('database_id'):
+                    # Fallback to simple database folder
+                    target_folder_id = self.create_or_get_database_folder(hierarchy['database_id'])
+                    if target_folder_id:
+                        database_name = self.get_database_name(hierarchy['database_id'])
                         logger.info(f"Will upload to database folder: {database_name}")
                 
                 # Check if we've reached the file limit
@@ -458,12 +684,12 @@ class NotionToGDriveMigrator:
                     logger.info(f"Reached file limit ({max_files}), skipping remaining files")
                     break
                 
-                # Download attachment
-                download_result = self.download_attachment(attachment_block)
+                # Download attachment with improved filename handling
+                download_result = self.download_attachment(attachment_block, page_title)
                 if download_result:
                     filename, file_content = download_result
                     
-                    # Upload to Google Drive (to database-specific folder if available)
+                    # Upload to Google Drive (to hierarchical folder if available)
                     file_id = self.upload_to_google_drive(filename, file_content, page_title, target_folder_id)
                     if file_id:
                         stats['successful_migrations'] += 1
