@@ -58,6 +58,7 @@ class NotionToGDriveMigrator:
         self.gdrive_folder_id = os.getenv('GOOGLE_DRIVE_FOLDER_ID')
         self.database_folder_cache = {}  # Cache for folder paths -> folder ID mapping
         self.uploaded_files = {}  # Track uploaded files for duplicate detection: {filename: file_id}
+        self.migrated_pages = []  # Track successfully migrated pages: {title, url, filename}
         
         # Debug logging
         logger.info(f"Raw NOTION_DATABASE_ID from env: '{raw_database_id}'")
@@ -671,6 +672,12 @@ class NotionToGDriveMigrator:
             logger.warning(f"Error extracting page title: {e}")
             return f"Untitled Page ({page.get('id', 'unknown')})"
     
+    def get_notion_page_url(self, page_id: str) -> str:
+        """Generate the Notion page URL from page ID."""
+        # Remove hyphens from page ID for URL
+        clean_page_id = page_id.replace('-', '')
+        return f"https://www.notion.so/{clean_page_id}"
+    
     def migrate_single_attachment_pages(self, max_files: int = 20) -> Dict[str, int]:
         """
         Main migration function.
@@ -749,7 +756,15 @@ class NotionToGDriveMigrator:
                     file_id = self.upload_to_google_drive(filename, file_content, page_title, target_folder_id)
                     if file_id:
                         stats['successful_migrations'] += 1
-                        logger.info(f"Successfully migrated: {page_title} -> {filename}")
+                        page_url = self.get_notion_page_url(page_id)
+                        logger.info(f"Successfully migrated: {page_title} -> {filename} | Notion URL: {page_url}")
+                        
+                        # Track migrated page
+                        self.migrated_pages.append({
+                            'title': page_title,
+                            'url': page_url,
+                            'filename': filename
+                        })
                         
                         # Check if we've reached the limit after this upload
                         if stats['successful_migrations'] >= max_files:
@@ -770,6 +785,18 @@ class NotionToGDriveMigrator:
         logger.info(f"Single attachment pages found: {stats['single_attachment_pages']}")
         logger.info(f"Successful migrations: {stats['successful_migrations']}")
         logger.info(f"Failed migrations: {stats['failed_migrations']}")
+        
+        # Log all successfully migrated pages with URLs
+        if self.migrated_pages:
+            logger.info("\n" + "="*60)
+            logger.info("SUCCESSFULLY MIGRATED NOTION PAGES:")
+            logger.info("="*60)
+            for i, page_info in enumerate(self.migrated_pages, 1):
+                logger.info(f"{i}. {page_info['title']}")
+                logger.info(f"   Filename: {page_info['filename']}")
+                logger.info(f"   Notion URL: {page_info['url']}")
+                logger.info("")
+            logger.info("="*60)
         
         return stats
 
