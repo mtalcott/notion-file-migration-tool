@@ -33,7 +33,7 @@ log_filename = f'migration_{timestamp}.log'
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler(log_filename),
@@ -271,6 +271,11 @@ class NotionToGDriveMigrator:
                     # Check if parent has a parent (recursive)
                     parent_hierarchy = self._build_page_hierarchy(parent_page, hierarchy)
                     hierarchy.update(parent_hierarchy)
+                    
+                    # Update full_path after recursion to include all levels
+                    if hierarchy.get('database_name'):
+                        hierarchy['full_path'] = [hierarchy['database_name']] + hierarchy['parent_pages']
+                    
             elif parent_type == 'block_id':
                 # Handle block_id parents - traverse up the block hierarchy
                 block_id = parent.get('block_id')
@@ -294,6 +299,11 @@ class NotionToGDriveMigrator:
                                 # Continue building hierarchy from the parent page
                                 parent_hierarchy = self._build_page_hierarchy(parent_page, hierarchy)
                                 hierarchy.update(parent_hierarchy)
+                                
+                                # Update full_path after recursion
+                                if hierarchy.get('database_name'):
+                                    hierarchy['full_path'] = [hierarchy['database_name']] + hierarchy['parent_pages']
+                                    
                         elif block_parent_type == 'database_id':
                             # Block's parent is a database
                             hierarchy['database_id'] = block_parent.get('database_id')
@@ -305,6 +315,11 @@ class NotionToGDriveMigrator:
                             fake_page = {'parent': block_parent}
                             parent_hierarchy = self._build_page_hierarchy(fake_page, hierarchy)
                             hierarchy.update(parent_hierarchy)
+                            
+                            # Update full_path after recursion
+                            if hierarchy.get('database_name'):
+                                hierarchy['full_path'] = [hierarchy['database_name']] + hierarchy['parent_pages']
+                                
                     except Exception as block_error:
                         logger.warning(f"Error retrieving block {block_id}: {block_error}")
             elif parent_type == 'database_id':
@@ -736,6 +751,13 @@ class NotionToGDriveMigrator:
                 
                 # Get full hierarchy for this page
                 hierarchy = self.get_page_hierarchy(page)
+                
+                # Debug logging for hierarchy
+                logger.debug(f"Page hierarchy for '{page_title}':")
+                logger.debug(f"  Database ID: {hierarchy.get('database_id')}")
+                logger.debug(f"  Database Name: {hierarchy.get('database_name')}")
+                logger.debug(f"  Parent Pages: {hierarchy.get('parent_pages')}")
+                logger.debug(f"  Full Path: {hierarchy.get('full_path')}")
                 
                 # Determine target folder based on hierarchy
                 target_folder_id = None
