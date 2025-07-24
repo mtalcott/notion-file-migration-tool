@@ -33,7 +33,7 @@ log_filename = f'migration_{timestamp}.log'
 
 # Configure logging
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler(log_filename),
@@ -218,6 +218,115 @@ class NotionToGDriveMigrator:
         
         return is_single_attachment, attachment_block
     
+    def get_database_hierarchy(self, database_id: str) -> List[str]:
+        """
+        Get the full hierarchy path for a database by traversing up through parent pages.
+        
+        Args:
+            database_id: The database ID to analyze
+            
+        Returns:
+            List of folder names from root to database (e.g., ['Archive', 'Trips', 'DatabaseName'])
+        """
+        try:
+            # Get database info
+            database = cast(Dict[str, Any], self.notion_client.databases.retrieve(database_id=database_id))
+            database_name = self.get_database_name_from_object(database)
+            
+            # Check if database has a parent
+            parent = database.get('parent', {})
+            parent_type = parent.get('type')
+            
+            hierarchy_path = []
+            
+            if parent_type == 'page_id':
+                # Database is a child of a page - traverse up the page hierarchy
+                parent_page_id = parent.get('page_id')
+                if parent_page_id:
+                    page_hierarchy = self._get_page_hierarchy_path(parent_page_id)
+                    hierarchy_path.extend(page_hierarchy)
+            elif parent_type == 'workspace':
+                # Database is at workspace root
+                pass
+            
+            # Add the database name at the end
+            hierarchy_path.append(database_name)
+            
+            return hierarchy_path
+            
+        except Exception as e:
+            logger.error(f"Error getting database hierarchy for {database_id}: {e}")
+            return [f"Unknown Database ({database_id})"]
+    
+    def get_database_name_from_object(self, database: Dict) -> str:
+        """Get the name from a database object."""
+        try:
+            title_array = database.get('title', [])
+            if title_array:
+                return ''.join([t.get('plain_text', '') for t in title_array])
+            return f"Untitled Database ({database.get('id', 'unknown')})"
+        except Exception as e:
+            logger.warning(f"Error extracting database name from object: {e}")
+            return f"Unknown Database ({database.get('id', 'unknown')})"
+    
+    def _get_page_hierarchy_path(self, page_id: str) -> List[str]:
+        """
+        Recursively get the hierarchy path for a page by traversing up through parents.
+        
+        Args:
+            page_id: The page ID to analyze
+            
+        Returns:
+            List of page titles from root to this page
+        """
+        try:
+            page = cast(Dict[str, Any], self.notion_client.pages.retrieve(page_id=page_id))
+            page_title = self.get_page_title(page)
+            
+            parent = page.get('parent', {})
+            parent_type = parent.get('type')
+            
+            hierarchy_path = []
+            
+            if parent_type == 'page_id':
+                # Page has a parent page - recurse
+                parent_page_id = parent.get('page_id')
+                if parent_page_id:
+                    parent_hierarchy = self._get_page_hierarchy_path(parent_page_id)
+                    hierarchy_path.extend(parent_hierarchy)
+            elif parent_type == 'database_id':
+                # Page's parent is a database - get database hierarchy
+                parent_database_id = parent.get('database_id')
+                if parent_database_id:
+                    database_hierarchy = self.get_database_hierarchy(parent_database_id)
+                    hierarchy_path.extend(database_hierarchy)
+            elif parent_type == 'workspace':
+                # Page is at workspace root
+                pass
+            elif parent_type == 'block_id':
+                # Handle block parents (traverse up through blocks)
+                block_id = parent.get('block_id')
+                if block_id:
+                    try:
+                        block = cast(Dict[str, Any], self.notion_client.blocks.retrieve(block_id=block_id))
+                        block_parent = block.get('parent', {})
+                        if block_parent.get('type') == 'page_id':
+                            parent_page_id = block_parent.get('page_id')
+                            if parent_page_id:
+                                parent_hierarchy = self._get_page_hierarchy_path(parent_page_id)
+                                hierarchy_path.extend(parent_hierarchy)
+                    except Exception as block_error:
+                        logger.warning(f"Error retrieving block {block_id}: {block_error}")
+            
+            # Add this page's title at the end
+            hierarchy_path.append(page_title)
+            
+            return hierarchy_path
+            
+        except Exception as e:
+            logger.error(f"Error getting page hierarchy for {page_id}: {e}")
+            return [f"Unknown Page ({page_id})"]
+
     def get_page_hierarchy(self, page: Dict) -> Dict[str, Any]:
         """
         Get the full hierarchy path for a page (database -> parent pages -> current page).
@@ -237,11 +346,13 @@ class NotionToGDriveMigrator:
             parent_type = parent.get('type')
             
             if parent_type == 'database_id':
-                # Direct child of database
+                # Direct child of database - but database might have parent pages
                 hierarchy['database_id'] = parent.get('database_id')
                 if hierarchy['database_id']:
                     hierarchy['database_name'] = self.get_database_name(hierarchy['database_id'])
-                    hierarchy['full_path'] = [hierarchy['database_name']]
+                    # Get the full hierarchy path for this database
+                    database_hierarchy = self.get_database_hierarchy(hierarchy['database_id'])
+                    hierarchy['full_path'] = database_hierarchy
             elif parent_type == 'page_id':
                 # Child of another page - need to traverse up the hierarchy
                 hierarchy = self._build_page_hierarchy(page, hierarchy)
