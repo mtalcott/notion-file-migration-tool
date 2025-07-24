@@ -4,6 +4,7 @@ Notion to Google Drive Migration Tool
 
 This script migrates Notion notes that contain only a single attachment 
 (image or PDF) to Google Drive using the Notion SDK and Google Drive API.
+File timestamps (created and modified dates) are preserved from the original Notion pages.
 """
 
 import os
@@ -439,14 +440,15 @@ class NotionToGDriveMigrator:
             logger.warning(f"Error checking for duplicate {filename}: {e}")
             return None
 
-    def upload_to_google_drive(self, filename: str, file_content: bytes, page_title: str, target_folder_id: Optional[str] = None) -> Optional[str]:
+    def upload_to_google_drive(self, filename: str, file_content: bytes, page_title: str, page: Dict, target_folder_id: Optional[str] = None) -> Optional[str]:
         """
-        Upload file to Google Drive with duplicate detection.
+        Upload file to Google Drive with duplicate detection and Notion timestamps.
         
         Args:
             filename: Name of the file to upload
             file_content: Binary content of the file
             page_title: Title of the Notion page (for metadata)
+            page: The Notion page object containing timestamp information
             target_folder_id: Specific folder ID to upload to (overrides default)
         
         Returns:
@@ -469,11 +471,23 @@ class NotionToGDriveMigrator:
             if not mime_type:
                 mime_type = 'application/octet-stream'
             
-            # Prepare file metadata
+            # Prepare file metadata with Notion timestamps
             file_metadata: Dict[str, Any] = {
                 'name': filename,
                 'description': f'Migrated from Notion page: {page_title}'
             }
+            
+            # Set timestamps based on Notion page dates
+            created_time = page.get('created_time')
+            last_edited_time = page.get('last_edited_time')
+            
+            if created_time:
+                file_metadata['createdTime'] = created_time
+                logger.debug(f"Setting created time to: {created_time}")
+            
+            if last_edited_time:
+                file_metadata['modifiedTime'] = last_edited_time
+                logger.debug(f"Setting modified time to: {last_edited_time}")
             
             # Determine target folder
             folder_id = target_folder_id or self.gdrive_folder_id
@@ -702,6 +716,14 @@ class NotionToGDriveMigrator:
             
             logger.info(f"Processing page: {page_title}")
             
+            # Log page timestamps for debugging
+            created_time = page.get('created_time')
+            last_edited_time = page.get('last_edited_time')
+            if created_time:
+                logger.debug(f"Page created: {created_time}")
+            if last_edited_time:
+                logger.debug(f"Page last edited: {last_edited_time}")
+            
             # Get page blocks
             blocks = self.get_page_blocks(page_id)
             
@@ -735,7 +757,7 @@ class NotionToGDriveMigrator:
                     filename, file_content = download_result
                     
                     # Upload to Google Drive (to hierarchical folder if available)
-                    file_id = self.upload_to_google_drive(filename, file_content, page_title, target_folder_id)
+                    file_id = self.upload_to_google_drive(filename, file_content, page_title, page, target_folder_id)
                     if file_id:
                         stats['successful_migrations'] += 1
                         page_url = self.get_notion_page_url(page_id)
@@ -793,6 +815,7 @@ def main():
         print(f"Failed migrations: {stats['failed_migrations']}")
         print("="*50)
         print("\nNOTE: This was a COPY operation - no files were deleted from Notion")
+        print("File timestamps (created/modified dates) are preserved from Notion pages")
         
         if stats['failed_migrations'] > 0:
             print(f"\nSome migrations failed. Check {log_filename} for details.")
