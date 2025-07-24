@@ -1,6 +1,11 @@
 # Notion to Google Drive Migration Tool
 
-This Python script migrates Notion notes that contain only a single attachment (image or PDF) to Google Drive using the Notion SDK and Google Drive API.
+This Python toolkit migrates Notion notes that contain only a single attachment (image or PDF) to Google Drive using the Notion SDK and Google Drive API, and provides a cleanup script to move migrated pages to trash.
+
+## Scripts Included
+
+1. **`notion_to_gdrive_migrator.py`** - Main migration script that copies attachments from Notion to Google Drive
+2. **`trash_migrated_pages.py`** - Cleanup script that moves successfully migrated Notion pages to trash
 
 ## Features
 
@@ -130,8 +135,55 @@ Google Drive Target Folder/
 
 The script will:
 - Display progress in the console
-- Create a `migration.log` file with detailed logs
+- Create a timestamped `migration_YYYYMMDD_HHMMSS.log` file with detailed logs
 - Show a summary of migration results at the end
+- Preserve original Notion page creation and modification timestamps on uploaded files
+
+## Cleaning Up Migrated Pages
+
+After successfully migrating your files, you can use the cleanup script to move the original Notion pages to trash:
+
+```bash
+# First, do a dry run to see what would be trashed
+python trash_migrated_pages.py migration_20250123_143022.log --dry-run
+
+# Then actually move the pages to trash
+python trash_migrated_pages.py migration_20250123_143022.log
+```
+
+### Trash Script Features
+
+- **Safe Operation**: Includes a `--dry-run` option to preview what will be trashed
+- **Log Parsing**: Automatically extracts successfully migrated pages from migration log files
+- **Detailed Logging**: Creates its own timestamped log file for the trash operation
+- **Error Handling**: Continues processing even if some pages fail to trash
+- **URL Extraction**: Parses Notion URLs from migration logs and converts them to page IDs
+
+### Trash Script Usage
+
+```bash
+python trash_migrated_pages.py <log_file> [--dry-run]
+```
+
+**Arguments:**
+- `log_file`: Path to the migration log file (e.g., `migration_20250123_143022.log`)
+- `--dry-run`: (Optional) Show what would be trashed without actually doing it
+
+**Example:**
+```bash
+# Preview what will be trashed
+python trash_migrated_pages.py migration_20250123_143022.log --dry-run
+
+# Actually move pages to trash
+python trash_migrated_pages.py migration_20250123_143022.log
+```
+
+The trash script will:
+1. Parse the migration log file to find successfully migrated pages
+2. Extract Notion URLs and convert them to page IDs
+3. Use the Notion API to move each page to trash (archive it)
+4. Generate a detailed log of the trash operation
+5. Provide a summary of results
 
 ## Configuration Options
 
