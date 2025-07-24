@@ -1,4 +1,4 @@
-# Notion to Google Drive Migration Tool
+# Notion to Google Drive Attachment Migrator
 
 This Python toolkit migrates Notion notes that contain only a single attachment (image or PDF) to Google Drive using the Notion SDK and Google Drive API, and provides a cleanup script to move migrated pages to trash.
 
