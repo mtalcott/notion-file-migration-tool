@@ -11,6 +11,7 @@ __pycache__/
 
 # Logs
 migration*.log
+trash_pages*.log
 
 # Etc
 *:Zone.Identifier
